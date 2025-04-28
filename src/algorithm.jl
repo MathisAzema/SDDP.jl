@@ -117,6 +117,10 @@ struct Options{T}
     # For threading
     lock::ReentrantLock
     root_node_risk_measure::AbstractRiskMeasure
+    #Mathis
+    infinite::Bool
+    cut_selection::Bool
+    shift_function::Function
     # Internal function: users should never construct this themselves.
     function Options(
         model::PolicyGraph{T},
@@ -138,6 +142,9 @@ struct Options{T}
         forward_pass_callback = x -> nothing,
         post_iteration_callback = result -> nothing,
         root_node_risk_measure::AbstractRiskMeasure = Expectation(),
+        infinite::Bool = false,
+        cut_selection::Bool = false,
+        shift_function::Function = SDDP.compute_no_shift,
     ) where {T}
         return new{T}(
             initial_state,
@@ -163,6 +170,9 @@ struct Options{T}
             Ref{Int}(0),  # last_log_iteration
             ReentrantLock(),
             root_node_risk_measure,
+            infinite,
+            cut_selection,
+            shift_function,
         )
     end
 end
@@ -223,7 +233,7 @@ function set_objective(node::Node{T}) where {T}
                 node.stage_objective +
                 objective_state_component +
                 belief_state_component +
-                bellman_term(node.bellman_function)
+                node.discount_factor*bellman_term(node.bellman_function)
             )
         )
     end
@@ -605,6 +615,8 @@ function backward_pass(
 ) where {T,NoiseType,N}
     # TODO(odow): improve storage type.
     cuts = Dict{T,Vector{Any}}(index => Any[] for index in keys(model.nodes))
+    println(scenario_path)
+    println(sampled_states)
     for index in length(scenario_path):-1:1
         outgoing_state = sampled_states[index]
         objective_state = get(objective_states, index, nothing)
@@ -650,6 +662,7 @@ function backward_pass(
                         items.supports,
                         items.probability .* items.belief,
                         items.objectives,
+                        options.cut_selection,
                     )
                     push!(cuts[node_index], new_cuts)
                 finally
@@ -675,6 +688,23 @@ function backward_pass(
                 options.duality_handler,
                 options,
             )
+
+            θᵏ=0.0
+            for i in 1:length(items.objectives)
+                p = items.probability[i]
+                θᵏ += p * items.objectives[i]
+            end
+            shift=options.shift_function(model, node, node.bellman_function, outgoing_state, θᵏ)
+
+            if outgoing_state[Symbol("volume[1]")]>=170
+                println(shift)
+                println(outgoing_state)
+                println(length(node.value_function.cut_V))
+            end
+
+            # println(sum(items.objectives)/82)
+
+            # refine_value_function(model, node, outgoing_state, items, shift)
             new_cuts = refine_bellman_function(
                 model,
                 node,
@@ -685,7 +715,10 @@ function backward_pass(
                 items.supports,
                 items.probability,
                 items.objectives,
+                options.cut_selection,
+                shift,
             )
+            # println((node_index, new_cuts))
             push!(cuts[node_index], new_cuts)
             if options.refine_at_similar_nodes
                 # Refine the bellman function at other nodes with the same
@@ -713,6 +746,7 @@ function backward_pass(
                         items.supports,
                         copied_probability,
                         items.objectives,
+                        options.cut_selection,
                     )
                     push!(cuts[other_index], new_cuts)
                 end
@@ -984,6 +1018,7 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
                 lock(() -> model.ext[:total_solves], model.lock),
                 duality_log_key(options.duality_handler),
                 lock(() -> model.ext[:numerical_issue], model.lock),
+                cuts,
             ),
         )
         has_converged, status =
@@ -1130,7 +1165,15 @@ function train(
     duality_handler::AbstractDualityHandler = SDDP.ContinuousConicDuality(),
     forward_pass_callback::Function = (x) -> nothing,
     post_iteration_callback = result -> nothing,
+    infinite::Bool=false,
+    cut_selection::Bool=false,
+    discount_factor::Float64=0.1,
+    shift_function::Function=SDDP.compute_no_shift,
 )
+    #Mathis
+    # if infinite
+    #     sampling_scheme = SDDP.InSampleMonteCarlo(max_depth=5*length(keys(model.nodes)))
+    # end
     if any(node -> node.objective_state !== nothing, values(model.nodes))
         # FIXME(odow): Threaded is broken for objective states
         parallel_scheme = Serial()
@@ -1274,6 +1317,9 @@ function train(
         forward_pass_callback,
         post_iteration_callback,
         root_node_risk_measure,
+        infinite,
+        cut_selection,
+        shift_function
     )
     status = :not_solved
     try
@@ -1315,7 +1361,7 @@ function train(
         end
     end
     close(log_file_handle)
-    return
+    return log
 end
 
 # Internal function: helper to conduct a single simulation. Users should use the

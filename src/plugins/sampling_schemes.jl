@@ -291,7 +291,7 @@ function sample_scenario(
         elseif sampling_scheme.terminate_on_cycle && node_index in visited_nodes
             # 2. terminate_on_cycle = true and we have detected a cycle.
             return scenario_path, true
-        elseif 0 < sampling_scheme.max_depth <= length(scenario_path)
+        elseif 0 < max_depth <= length(scenario_path)
             # 3. max_depth > 0 and we have explored max_depth number of nodes.
             return scenario_path, false
         elseif sampling_scheme.terminate_on_dummy_leaf &&

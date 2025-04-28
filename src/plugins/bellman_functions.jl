@@ -84,8 +84,11 @@ function _dynamic_range_warning(intercept, coefficients)
 end
 
 function _add_cut(
+    model::PolicyGraph{T},
+    node::Node{T},
     V::ConvexApproximation,
     θᵏ::Float64,
+    shift::Float64,
     πᵏ::Dict{Symbol,Float64},
     xᵏ::Dict{Symbol,Float64},
     obj_y::Union{Nothing,NTuple{N,Float64}},
@@ -97,15 +100,53 @@ function _add_cut(
     end
     _dynamic_range_warning(θᵏ, πᵏ)
     cut = Cut(θᵏ, πᵏ, obj_y, belief_y, 1, nothing)
-    _add_cut_constraint_to_model(V, cut)
+    _add_cut_constraint_to_model(model, node, V, cut, shift)
     if cut_selection
         _cut_selection_update(V, cut, xᵏ)
     end
     return
 end
 
-function _add_cut_constraint_to_model(V::ConvexApproximation, cut::Cut)
-    model = JuMP.owner_model(V.theta)
+#Mathis
+function _add_cut_to_two_stage_model(
+    node::Node{T},   
+    θᵏ::Float64,
+    πᵏ::Dict{Symbol,Float64},
+    xᵏ::Dict{Symbol,Float64},
+    obj_y::Union{Nothing,NTuple{N,Float64}},
+    belief_y::Union{Nothing,Dict{T,Float64}}
+) where {N,T}
+
+    for (key, x) in xᵏ
+        θᵏ -= πᵏ[key] * x
+    end
+    _dynamic_range_warning(θᵏ, πᵏ)
+    cut = Cut(θᵏ, πᵏ, obj_y, belief_y, 1, nothing)
+    
+    two_stage_model = node.two_stage.model
+    S=length(node.noise_terms)
+    expr = @expression(
+        two_stage_model,
+        [j=1:S],
+        node.two_stage.bellman_variables[j]-sum(cut.coefficients[i] * node.two_stage.states[i][j] for (i, x) in node.states)
+    )
+    if JuMP.objective_sense(two_stage_model) == MOI.MIN_SENSE
+        @constraint(two_stage_model, [j in 1:S], expr[j] >= cut.intercept-shift)
+    else
+        #Mathis Quel shift quand on maximise ?
+        @constraint(two_stage_model, [j in 1:S], expr[j] <= cut.intercept)
+    end
+    return
+end
+
+function _add_cut_constraint_to_model(
+    model::PolicyGraph{T}, 
+    node::Node{T}, 
+    V::ConvexApproximation, 
+    cut::Cut, 
+    shift::Float64
+) where {T}
+    mod = JuMP.owner_model(V.theta)
     yᵀμ = JuMP.AffExpr(0.0)
     if V.objective_states !== nothing
         for (y, μ) in zip(cut.obj_y, V.objective_states)
@@ -118,14 +159,50 @@ function _add_cut_constraint_to_model(V::ConvexApproximation, cut::Cut)
         end
     end
     expr = @expression(
-        model,
+        mod,
         V.theta + yᵀμ - sum(cut.coefficients[i] * x for (i, x) in V.states)
     )
-    cut.constraint_ref = if JuMP.objective_sense(model) == MOI.MIN_SENSE
-        @constraint(model, expr >= cut.intercept)
+    cut.constraint_ref = if JuMP.objective_sense(mod) == MOI.MIN_SENSE
+        csp = @constraint(mod, expr >= cut.intercept-shift)
+        _update_value_function(model, node, cut, shift, csp)
     else
-        @constraint(model, expr <= cut.intercept)
+        @constraint(mod, expr <= cut.intercept)
     end
+
+    #Get cst in node
+    return
+end
+
+function _update_value_function(
+    model::PolicyGraph{T}, 
+    node::Node{T}, 
+    cut::Cut, 
+    shift::Float64,
+    csp::JuMP.ConstraintRef
+) where {T}
+
+    # TV
+    for child in node.children
+        child_node=model[child.term]
+        child_vf=child_node.value_function
+        md_TV = child_vf.model_TV
+        @constraint(md_TV, child_vf.theta_TV -sum(cut.coefficients[i]*x for (i,x) in child_vf.states_TV)>=cut.intercept)
+        
+        md_V = child_vf.model
+        cV = @constraint(md_V, child_vf.theta-sum(cut.coefficients[i]*x for (i,x) in child_vf.states)>=cut.intercept-shift)
+        
+        cutV = Cut2(
+            cut.intercept-shift,
+            cut.coefficients,
+            shift,
+            cV,
+            csp,
+        )
+    
+        push!(child_node.value_function.cut_V, cutV)
+    end
+
+    #Get cst in node
     return
 end
 
@@ -326,9 +403,25 @@ function initialize_bellman_function(
     if length(node.children) == 0
         lower_bound = upper_bound = 0.0
     end
-    Θᴳ = @variable(node.subproblem)
+    #Mathis
+    Θᴳ = @variable(node.subproblem, base_name = "V_"*string(node.index))
     lower_bound > -Inf && JuMP.set_lower_bound(Θᴳ, lower_bound)
     upper_bound < Inf && JuMP.set_upper_bound(Θᴳ, upper_bound)
+
+    cV= @constraint(node.value_function.model, node.value_function.theta >= lower_bound)
+    csp= @constraint(node.subproblem, Θᴳ >= lower_bound)
+
+    cutV = Cut2(
+        0.0,
+        Dict{Symbol,Float64}(i => 0.0 for (i,x) in node.states),
+        0.0,
+        cV,
+        csp,
+    )
+    push!(node.value_function.cut_V, cutV)
+
+
+
     # Initialize bounds for the objective states. If objective_state==nothing,
     # this check will be skipped by dispatch.
     _add_initial_bounds(node.objective_state, Θᴳ)
@@ -399,6 +492,55 @@ function _add_initial_bounds(obj_state::ObjectiveState, theta)
     return
 end
 
+#Mathis
+function refine_value_function(
+    model::PolicyGraph{T},
+    node::Node{T},
+    outgoing_state::Dict{Symbol,Float64},
+    items::BackwardPassItems,
+    shift::Float64,
+) where {T}
+    N = length(node.children)
+    index_child = Dict(c.term => i for (i, c) in enumerate(node.children))
+    πᵏ = [Dict(key => 0.0 for key in keys(model[child.term].states)) for child in node.children]
+    θᵏ = zeros(N)
+    for (j, c) in enumerate(items.nodes)
+        p = items.probability[j]
+        θᵏ[index_child[c]] += p * items.objectives[j]
+        for (key, dual) in items.duals[j]
+            πᵏ[index_child[c]][key] += p * dual
+        end
+    end
+
+    for (key, x) in outgoing_state
+        for c in keys(πᵏ)
+            θᵏ[c] -= πᵏ[c][key] * x
+        end
+    end
+
+    # TV
+    for child in node.children
+        child_node=model[child.term]
+        child_vf=child_node.value_function
+        md = child_vf.model_TV
+        @constraint(md, child_vf.theta_TV>=θᵏ[index_child[child.term]]+sum(πᵏ[index_child[child.term]][i]*x for (i,x) in child_vf.states_TV))
+        # push!(child_node.value_function.cut_TV, Cut2(θᵏ[index_child[child.term]], πᵏ[index_child[child.term]], shift))
+    end
+
+    #Attention: quel shift si plusieurs enfants ?
+    θᵏ.-= shift
+
+    # println(("cut added to value function :",θᵏ, πᵏ, outgoing_state))
+
+    for child in node.children
+        child_node=model[child.term]
+        child_vf=child_node.value_function
+        md = child_vf.model
+        @constraint(md, child_vf.theta>=θᵏ[index_child[child.term]]+sum(πᵏ[index_child[child.term]][i]*x for (i,x) in child_vf.states))
+        # push!(child_node.value_function.cut_V, Cut2(θᵏ[index_child[child.term]], πᵏ[index_child[child.term]], shift))
+    end
+end
+
 function refine_bellman_function(
     model::PolicyGraph{T},
     node::Node{T},
@@ -409,6 +551,8 @@ function refine_bellman_function(
     noise_supports::Vector,
     nominal_probability::Vector{Float64},
     objective_realizations::Vector{Float64},
+    cut_selection::Bool,
+    shift::Float64,
 ) where {T}
     lock(node.lock)
     try
@@ -422,6 +566,8 @@ function refine_bellman_function(
             noise_supports,
             nominal_probability,
             objective_realizations,
+            cut_selection,
+            shift,
         )
     finally
         unlock(node.lock)
@@ -438,6 +584,8 @@ function _refine_bellman_function_no_lock(
     noise_supports::Vector,
     nominal_probability::Vector{Float64},
     objective_realizations::Vector{Float64},
+    cut_selection::Bool,
+    shift::Float64,
 ) where {T}
     # Sanity checks.
     @assert length(dual_variables) ==
@@ -457,12 +605,15 @@ function _refine_bellman_function_no_lock(
     # The meat of the function.
     if bellman_function.cut_type == SINGLE_CUT
         return _add_average_cut(
+            model,
             node,
             outgoing_state,
             risk_adjusted_probability,
             objective_realizations,
             dual_variables,
             offset,
+            cut_selection,
+            shift,
         )
     else  # Add a multi-cut
         @assert bellman_function.cut_type == MULTI_CUT
@@ -478,14 +629,236 @@ function _refine_bellman_function_no_lock(
     end
 end
 
+#Mathis attention il faudrait un shift pour chaque enfant
+function inf_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    for child in node.children
+        child_node=model[child.term]
+        inf_TV, sol = compute_inf_TV(child_node.two_stage)
+        V_x=compute_V(child_node.value_function, sol)
+
+        res+=inf_TV-V_x
+    end
+    return res
+end
+
+function approx_inf_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    for child in node.children
+        child_node=model[child.term]
+        _, sol = compute_inf_approx_TV(child_node.value_function)
+        V_x=compute_V(child_node.value_function, sol)
+        
+        # inf_TV, sol = compute_inf_TV(child_node.two_stage)
+        inf_TV=compute_TV(child_node, sol)
+
+        DCAs = DCA_shift(model, node, bellman_function, state, θᵏ)
+        res+=min(DCAs, inf_TV-V_x, θᵏ-compute_V(child_node.value_function, state))
+        # if child_node.index == 1
+        #     # DCAs2 = DCA_shift(model, node, bellman_function, sol, θᵏ)
+        #     println((DCAs, inf_TV-V_x, res, sol, state))
+        # end
+    end
+    return res
+end
+
+function current_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64
+) where {T}
+    res=0.0
+    for child in node.children
+        child_node=model[child.term]
+
+        TVx=θᵏ
+        Vx=compute_V(child_node.value_function, state)
+
+        res+=TVx-Vx
+    end
+    return res
+end
+
+function update_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    shift_k::Float64,
+) where {T}
+    for cut in node.value_function.cut_V
+        if shift_k<= cut.shift
+            cut.intercept += cut.shift-shift_k
+            cut.shift = shift_k
+            set_normalized_rhs(cut.constraint_V, cut.intercept)
+            set_normalized_rhs(cut.constraint_subproblem, cut.intercept)
+        end
+    end
+end
+
+function current_shift2(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64
+) where {T}
+    res=0.0
+    for child in node.children
+        child_node=model[child.term]
+
+        TVx=θᵏ
+        Vx=compute_V(child_node.value_function, state)
+
+        res+=TVx-Vx
+        update_shift(model, child_node, res)
+        # println(res)
+    end
+    return res
+end
+
+function DCA_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64
+) where {T}
+    res=0.0
+    for child in node.children
+        child_node=model[child.term]
+        sol = DCA(child_node.value_function, state)
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+
+        # if node.index == 3
+        #     println((TVx-Vx, state, sol))
+        # end
+
+        res+=TVx-Vx
+    end
+    return res
+end
+
+function random_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    sol=Dict{Symbol,Float64}()
+
+    for child in node.children
+        child_node=model[child.term]
+        two_stage=child_node.two_stage
+        for (i,x) in state
+            lb=two_stage.lower_bounds[i]
+            ub=two_stage.upper_bounds[i]
+            sol[i]=rand()*(ub-lb)+lb
+        end
+        # println("000")
+        # DCAs = DCA_shift(model, node, bellman_function, state, θᵏ)
+        # prinln(111)
+        # res+=DCAs
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+
+        # res+=min(DCAs,TVx-Vx)
+        res+=min(TVx-Vx)
+        # res+=min(TVx-Vx, θᵏ-compute_V(child_node.value_function, state)) 
+
+    end
+    return res
+end
+
+function random_shift2(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    sol=Dict{Symbol,Float64}()
+
+    for child in node.children
+        child_node=model[child.term]
+        two_stage=child_node.two_stage
+        for (i,x) in state
+            lb=two_stage.lower_bounds[i]
+            ub=two_stage.upper_bounds[i]
+            sol[i]=rand()*(ub-lb)+lb
+        end
+        # println("000")
+        # DCAs = DCA_shift(model, node, bellman_function, state, θᵏ)
+        # prinln(111)
+        # res+=DCAs
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+
+        # res+=min(DCAs,TVx-Vx)
+        res+=min(TVx-Vx, θᵏ-compute_V(child_node.value_function, state)) 
+        update_shift(model, child_node, res)
+
+    end
+    return res
+end
+
+function best_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    # if node.index == 3
+    #     (a,b,c) = (compute_current_shift(model, node, bellman_function, state), compute_inf_shift(model, node, bellman_function, state), compute_random_shift(model, node, bellman_function, state))
+    #     # println((a,b,c))
+    # end
+    a = compute_current_shift(model, node, bellman_function, state, θᵏ)
+    # b = compute_inf_shift(model, node, bellman_function, state, θᵏ)
+    c = compute_random_shift(model, node, bellman_function, state, θᵏ)
+    if a<=c
+        # println((node.index, "current shift is the best: $(c-a)", a, c, state))
+    end
+    return minimum((a, c))
+end
+
+function no_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    return 0.0
+end
+
 function _add_average_cut(
-    node::Node,
+    model::PolicyGraph{T},
+    node::Node{T},
     outgoing_state::Dict{Symbol,Float64},
     risk_adjusted_probability::Vector{Float64},
     objective_realizations::Vector{Float64},
     dual_variables::Vector{Dict{Symbol,Float64}},
     offset::Float64,
-)
+    cut_selection::Bool,
+    shift::Float64,
+) where {T}
     N = length(risk_adjusted_probability)
     @assert N == length(objective_realizations) == length(dual_variables)
     # Calculate the expected intercept and dual variables with respect to the
@@ -506,13 +879,26 @@ function _add_average_cut(
     belief_y =
         node.belief_state === nothing ? nothing : node.belief_state.belief
     _add_cut(
+        model,
+        node, 
         node.bellman_function.global_theta,
         θᵏ,
+        shift,
         πᵏ,
         outgoing_state,
         obj_y,
         belief_y,
+        cut_selection=cut_selection,
     )
+    # Mathis faudrait pouvoir le désactiver
+    # _add_cut_to_two_stage_model(
+    #     node,
+    #     θᵏ,
+    #     πᵏ,
+    #     outgoing_state,
+    #     obj_y,
+    #     belief_y,
+    # )
     return (
         theta = θᵏ,
         pi = πᵏ,

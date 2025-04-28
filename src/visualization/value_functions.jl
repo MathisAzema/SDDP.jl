@@ -409,3 +409,76 @@ function plot(
         "$(length(variables)).",
     )
 end
+
+function compare_two_models(
+    model1::PolicyGraph{T},
+    model2::PolicyGraph{T};
+    replications::Int=1,
+    TimeHorizon::Int=1,
+    discount_factor::Float64=0.99,
+) where {T}
+    println(" WARNING")
+    simulations1 = simulate(
+        model1,
+        replications,
+        [:inflow];
+        sampling_scheme=InSampleMonteCarlo(max_depth=TimeHorizon),
+    )
+
+    oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+
+    println((Statistics.mean(oos1), Statistics.std(oos1)))
+
+    Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
+
+    Noise_scenario=Historical(Scenario)
+    simulations2 = simulate(
+        model2,
+        replications,
+        [:inflow];
+        sampling_scheme=Noise_scenario,
+    )
+
+    oos2 = [sum((discount_factor^(i-1))*simulations2[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+    return Statistics.mean(oos1), Statistics.std(oos1), Statistics.mean(oos2), Statistics.std(oos2)
+end
+
+function count_active_cuts(
+    Cuts::Vector{Log}, 
+    node::Node, 
+    tol::Float64
+)
+    active_cuts = 0
+    vf = node.value_function
+    model=vf.model
+    T = length(Cuts[1].iter_cuts)
+    for c in Cuts
+        index=node.index == 1 ? T : node.index - 1
+        cnode=c.iter_cuts[index]
+        for i in 1:length(cnode)
+            intercept=cnode[i][1]
+            coef=cnode[i][2]
+            x_k=cnode[i][3]
+            @objective(model, Max, intercept - vf.theta + sum(a * (vf.states[i] - x_k[i]) for (i,a) in coef))
+            JuMP.optimize!(model)
+            if JuMP.objective_value(model)>=-tol
+                active_cuts += 1
+            end
+        end
+    end
+    println(node.index, " ", active_cuts)
+    @objective(model, Min, vf.theta)
+    return active_cuts
+end
+
+function count_all_active_cuts(
+    Cuts::Vector{Log}, 
+    model::SDDP.PolicyGraph{T}, 
+    tol::Float64
+)  where {T}
+    active_cuts = 0
+    for (index,node) in model.nodes
+        active_cuts += count_active_cuts(Cuts, node, tol)
+    end
+    return active_cuts
+end

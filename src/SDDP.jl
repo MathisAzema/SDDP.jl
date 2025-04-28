@@ -67,4 +67,7 @@ include("alternative_forward.jl")
 include("Experimental.jl")
 include("MSPFormat.jl")
 
+#Mathis
+include("plugins/two_stage.jl")
+
 end

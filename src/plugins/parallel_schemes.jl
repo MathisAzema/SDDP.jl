@@ -39,7 +39,7 @@ function master_loop(
     model::PolicyGraph{T},
     options::Options,
 ) where {T}
-    _initialize_solver(model; throw_error = false)
+    # _initialize_solver(model; throw_error = false)
     status = nothing
     while status === nothing
         # Disable CTRL+C so that InterruptExceptions can be thrown only between

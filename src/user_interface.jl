@@ -413,6 +413,16 @@ function LinearGraph(stages::Int)
     return Graph(0, collect(1:stages), edges)
 end
 
+#Mathis
+function InfiniteLinearGraph(stages::Int)
+    edges = Tuple{Pair{Int,Int},Float64}[]
+    for t in 1:stages
+        push!(edges, (t - 1 => t, 1.0))
+    end
+    push!(edges, (stages => 1, 1.0))
+    return Graph(0, collect(1:stages), edges)
+end
+
 """
     MarkovianGraph(transition_matrices::Vector{Matrix{Float64}})
 
@@ -620,11 +630,43 @@ struct BeliefState{T}
     updater::Function
 end
 
+mutable struct TwoStage 
+    model::JuMP.Model
+    non_anticipative_variables::Dict{Symbol, VariableRef}
+    states::Dict{Symbol, Vector{VariableRef}}
+    bellman_variables::Vector{VariableRef}
+    lower_bounds::Dict{Symbol, Float64}
+    upper_bounds::Dict{Symbol, Float64}
+end
+
+mutable struct Cut2
+    intercept::Float64
+    coefficients::Dict{Symbol,Float64}
+    shift::Float64
+    constraint_V::JuMP.ConstraintRef
+    constraint_subproblem::JuMP.ConstraintRef
+end
+
+mutable struct Value_Function
+    model::JuMP.Model
+    cut_V::Vector{Cut2}
+    theta::JuMP.VariableRef
+    states::Dict{Symbol,JuMP.VariableRef}
+    model_TV::JuMP.Model
+    theta_TV::JuMP.VariableRef
+    states_TV::Dict{Symbol,JuMP.VariableRef}
+end
+
 mutable struct Node{T}
     # The index of the node in the policy graph.
     index::T
     # The JuMP subproblem.
     subproblem::JuMP.Model
+    # Mathis.
+    two_stage::TwoStage
+    value_function::Value_Function
+    states_two_stage::Dict{Symbol,VariableRef}
+    constraints::Vector{ConstraintRef}
     # A vector of the child nodes.
     children::Vector{Noise{T}}
     # A vector of the discrete stagewise-independent noise terms.
@@ -657,6 +699,8 @@ mutable struct Node{T}
     lock::ReentrantLock
     # (lower, upper, is_integer)
     incoming_state_bounds::Dict{Symbol,Tuple{Float64,Float64,Bool}}
+    #Mathis
+    discount_factor::Float64
 end
 
 function Base.show(io::IO, node::Node)
@@ -686,6 +730,7 @@ struct Log
     total_solves::Int
     duality_key::String
     serious_numerical_issue::Bool
+    iter_cuts
 end
 
 struct TrainingResults
@@ -923,6 +968,7 @@ model = PolicyGraph(
 end
 ```
 """
+#Mathis
 function PolicyGraph(
     builder::Function,
     graph::Graph{T};
@@ -933,6 +979,7 @@ function PolicyGraph(
     # These arguments are deprecated
     bellman_function = nothing,
     direct_mode::Bool = false,
+    discount_factor::Float64 = 1.0,
 ) where {T}
     # Spend a one-off cost validating the graph.
     _validate_graph(graph)
@@ -964,9 +1011,23 @@ function PolicyGraph(
             continue
         end
         subproblem = construct_subproblem(optimizer, direct_mode)
+        twostage=TwoStage(
+            construct_subproblem(optimizer, direct_mode), 
+            Dict{Symbol,VariableRef}(), 
+            Dict{Symbol, Vector{VariableRef}}(),
+            VariableRef[],
+            Dict{Symbol, Float64}(),
+            Dict{Symbol, Float64}()
+        )
+
+        valuefunction = initialize_value_function(sense, optimizer)
         node = Node(
             node_index,
             subproblem,
+            twostage,
+            valuefunction,
+            Dict{Symbol, VariableRef}(),
+            JuMP.ConstraintRef[],
             Noise{T}[],
             Noise[],
             (ω) -> nothing,
@@ -990,11 +1051,12 @@ function PolicyGraph(
             Dict{Symbol,Any}(),
             ReentrantLock(),
             Dict{Symbol,Tuple{Float64,Float64,Bool}}(),
+            discount_factor,
         )
         subproblem.ext[:sddp_policy_graph] = policy_graph
         policy_graph.nodes[node_index] = subproblem.ext[:sddp_node] = node
         JuMP.set_objective_sense(subproblem, policy_graph.objective_sense)
-        builder(subproblem, node_index)
+        builder(subproblem, node_index, discount_factor)
         # Add a dummy noise here so that all nodes have at least one noise term.
         if length(node.noise_terms) == 0
             push!(node.noise_terms, Noise(nothing, 1.0))
@@ -1003,6 +1065,7 @@ function PolicyGraph(
         node.has_integrality =
             (JuMP.VariableRef, MOI.Integer) in ctypes ||
             (JuMP.VariableRef, MOI.ZeroOne) in ctypes
+        
     end
     # Loop back through and add the arcs/children.
     for (node_index, children) in graph.nodes
@@ -1040,6 +1103,16 @@ function PolicyGraph(
         for (k, v) in domain[node_name]
             node.incoming_state_bounds[k] = something(v, (-Inf, Inf, false))
         end
+    end
+    _initialize_solver(policy_graph; throw_error = false)
+
+    for (node_index, children) in graph.nodes
+        if node_index == graph.root_node
+            continue
+        end
+        node = policy_graph.nodes[node_index]
+        initialize_two_stage(policy_graph, node, optimizer)
+        add_state_variables_to_value_function(node)
     end
     return policy_graph
 end
