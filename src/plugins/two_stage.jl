@@ -115,6 +115,7 @@ function initialize_value_function(
         model_TV,
         theta_TV,
         Dict{Symbol,JuMP.VariableRef}(),
+        Dict{Symbol,JuMP.Float64}(),
     )
 end
 
@@ -131,19 +132,10 @@ function add_state_variables_to_value_function(
         value_function.states[src[1]]=dest
         lb=node.two_stage.lower_bounds[src[1]]
         ub=node.two_stage.upper_bounds[src[1]]
+        value_function.heuristic_state[src[1]]=rand()*(ub-lb)+lb
         @constraint(value_function.model, dest >= lb)
         @constraint(value_function.model, dest <= ub)
     end
-
-    # cV= @constraint(value_function.model, value_function.theta >= 0.0)
-
-    # cutV = Cut2(
-    #     0.0,
-    #     Dict{Symbol,Float64}(i => 0.0 for (i,x) in value_function.states),
-    #     0.0,
-    #     cV,
-    # )
-    # push!(value_function.cut_V, cutV)
 
     #TV
     y_TV = @variable(value_function.model_TV, [1:length(node.states)])
@@ -158,15 +150,6 @@ function add_state_variables_to_value_function(
         @constraint(value_function.model_TV, dest <= ub)
     end
 
-    # cTV= @constraint(value_function.model_TV, value_function.theta_TV >= 0.0)
-
-    # cutTV = Cut2(
-    #     0.0,
-    #     Dict{Symbol,Float64}(i => 0.0 for (i,x) in value_function.states),
-    #     0.0,
-    #     cTV,
-    # )
-    # push!(value_function.cut_TV, cutTV)
 end
 
 function initialize_two_stage(
@@ -272,21 +255,14 @@ function compute_TV(
     return TVx
 end
 
-# function compute_V(
-#     vf::Value_Function,
-#     incoming_state::Dict{Symbol,Float64}
-# )
-#     model=vf.model
-#     for (i, value) in incoming_state
-#         JuMP.fix(vf.states[i], value; force=true)
-#     end
-#     JuMP.optimize!(model)
-#     obj=JuMP.objective_value(model)
-#     for (i, value) in incoming_state
-#         JuMP.unfix(vf.states[i])
-#     end
-#     return obj
-# end
+function compute_inf_V(
+    vf::Value_Function
+)
+    model=vf.model
+    JuMP.optimize!(model)
+    obj=JuMP.objective_value(model)
+    return obj
+end
 
 function compute_V(
     vf::Value_Function,

@@ -655,6 +655,7 @@ mutable struct Value_Function
     model_TV::JuMP.Model
     theta_TV::JuMP.VariableRef
     states_TV::Dict{Symbol,JuMP.VariableRef}
+    heuristic_state::Dict{Symbol, Float64}
 end
 
 mutable struct Node{T}

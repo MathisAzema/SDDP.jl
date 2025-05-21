@@ -417,7 +417,6 @@ function compare_two_models(
     TimeHorizon::Int=1,
     discount_factor::Float64=0.99,
 ) where {T}
-    println(" WARNING")
     simulations1 = simulate(
         model1,
         replications,
@@ -427,7 +426,6 @@ function compare_two_models(
 
     oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
 
-    println((Statistics.mean(oos1), Statistics.std(oos1)))
 
     Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
 
@@ -443,6 +441,43 @@ function compare_two_models(
     return Statistics.mean(oos1), Statistics.std(oos1), Statistics.mean(oos2), Statistics.std(oos2)
 end
 
+function compare_models(
+    list_of_models::Vector{PolicyGraph{T}};
+    replications::Int=1,
+    TimeHorizon::Int=1,
+    discount_factor::Float64=0.99,
+) where {T}
+    oos=[]
+    model1=list_of_models[1]
+    simulations1 = simulate(
+        model1,
+        replications,
+        [:inflow];
+        sampling_scheme=InSampleMonteCarlo(max_depth=TimeHorizon),
+    )
+
+    oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+    push!(oos, oos1)
+
+    Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
+
+    Noise_scenario=Historical(Scenario)
+
+    for i in 2:length(list_of_models)
+        model2=list_of_models[i]
+        simulations2 = simulate(
+            model2,
+            replications,
+            [:inflow];
+            sampling_scheme=Noise_scenario,
+        )
+        oos2 = [sum((discount_factor^(i-1))*simulations2[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+        push!(oos, oos2)
+    end
+
+    return oos
+end
+
 function count_active_cuts(
     Cuts::Vector{Log}, 
     node::Node, 
@@ -452,6 +487,7 @@ function count_active_cuts(
     vf = node.value_function
     model=vf.model
     T = length(Cuts[1].iter_cuts)
+    println("T: ", T)
     for c in Cuts
         index=node.index == 1 ? T : node.index - 1
         cnode=c.iter_cuts[index]
@@ -476,9 +512,9 @@ function count_all_active_cuts(
     model::SDDP.PolicyGraph{T}, 
     tol::Float64
 )  where {T}
-    active_cuts = 0
-    for (index,node) in model.nodes
-        active_cuts += count_active_cuts(Cuts, node, tol)
-    end
-    return active_cuts
+    # active_cuts = 0
+    # for (index,node) in model.nodes
+    #     active_cuts += count_active_cuts(Cuts, node, tol)
+    # end
+    return [count_active_cuts(Cuts, node, tol) for (index,node) in model.nodes]
 end

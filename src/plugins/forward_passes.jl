@@ -20,11 +20,25 @@ struct DefaultForwardPass <: AbstractForwardPass
     end
 end
 
+# mutable struct Trajectory{T}
+#     scenario_path::Vector{Tuple{T,NoiseType}},
+#     sampled_states::Vector{Dict{Symbol,Float64}},
+#     objective_states::Vector{Tuple{}},
+#     belief_states::Vector{Tuple{Int,Dict{T,Float64}}}
+#     cumulative_value::Float64
+# end
+# scenario_path::Vector{Tuple{Int64, Float64}}
+# sampled_states::Vector{Dict{Symbol, Float64}}
+# objective_states::Vector{Tuple{}}
+# belief_states::Vector{Tuple{Int64, Dict{Int64, Float64}}}
+
 function forward_pass(
     model::PolicyGraph{T},
     options::Options,
     pass::DefaultForwardPass,
 ) where {T}
+
+    # forward_trajectory=
     # First up, sample a scenario. Note that if a cycle is detected, this will
     # return the cycle node as well.
     @_timeit_threadsafe model.timer_output "sample_scenario" begin
@@ -137,13 +151,20 @@ function forward_pass(
         end
     end
     # ===== End: drop off starting state if terminated due to cycle =====
-    return (
-        scenario_path = scenario_path,
-        sampled_states = sampled_states,
-        objective_states = objective_states,
-        belief_states = belief_states,
-        cumulative_value = cumulative_value,
+    return Trajectory{T}(
+        scenario_path,
+        sampled_states,
+        objective_states,
+        belief_states,
+        cumulative_value,
     )
+    # return (
+    #     scenario_path = scenario_path,
+    #     sampled_states = sampled_states,
+    #     objective_states = objective_states,
+    #     belief_states = belief_states,
+    #     cumulative_value = cumulative_value,
+    # )
 end
 
 mutable struct RevisitingForwardPass <: AbstractForwardPass

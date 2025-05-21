@@ -752,6 +752,34 @@ function DCA_shift(
     return res
 end
 
+function fix_shift(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    sol=Dict{Symbol,Float64}()
+
+    for child in node.children
+        child_node=model[child.term]
+        two_stage=child_node.two_stage
+        for (i,x) in state
+            lb=two_stage.lower_bounds[i]
+            ub=two_stage.upper_bounds[i]
+            sol[i]=144.0
+        end
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+
+        # res+=min(DCAs,TVx-Vx)
+        res+=TVx-Vx 
+
+    end
+    return res
+end
+
 function random_shift(
     model::PolicyGraph{T},
     node::Node{T},
@@ -770,16 +798,11 @@ function random_shift(
             ub=two_stage.upper_bounds[i]
             sol[i]=rand()*(ub-lb)+lb
         end
-        # println("000")
-        # DCAs = DCA_shift(model, node, bellman_function, state, θᵏ)
-        # prinln(111)
-        # res+=DCAs
         TVx=compute_TV(child_node, sol)
         Vx=compute_V(child_node.value_function, sol)
 
         # res+=min(DCAs,TVx-Vx)
-        res+=min(TVx-Vx)
-        # res+=min(TVx-Vx, θᵏ-compute_V(child_node.value_function, state)) 
+        res+=min(TVx-Vx, θᵏ-compute_V(child_node.value_function, state)) 
 
     end
     return res
@@ -803,15 +826,109 @@ function random_shift2(
             ub=two_stage.upper_bounds[i]
             sol[i]=rand()*(ub-lb)+lb
         end
-        # println("000")
-        # DCAs = DCA_shift(model, node, bellman_function, state, θᵏ)
-        # prinln(111)
-        # res+=DCAs
         TVx=compute_TV(child_node, sol)
         Vx=compute_V(child_node.value_function, sol)
 
-        # res+=min(DCAs,TVx-Vx)
         res+=min(TVx-Vx, θᵏ-compute_V(child_node.value_function, state)) 
+        update_shift(model, child_node, res)
+
+    end
+    return res
+end
+
+function random_shift3(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    sol=Dict{Symbol,Float64}()
+
+    for child in node.children
+        child_node=model[child.term]
+        two_stage=child_node.two_stage
+        for (i,x) in state
+            lb=two_stage.lower_bounds[i]
+            ub=two_stage.upper_bounds[i]
+            sol[i]=rand()*(ub-lb)+lb
+        end
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+        res_rand=TVx-Vx
+        res_current=θᵏ-compute_V(child_node.value_function, state)
+        res_heur=compute_TV(child_node, child_node.value_function.heuristic_state)-compute_V(child_node.value_function, child_node.value_function.heuristic_state)
+
+        if res_current<=min(res_rand, res_heur)
+            child_node.value_function.heuristic_state=state
+        elseif res_rand<=min(res_heur, res_current)
+            child_node.value_function.heuristic_state=sol
+        end
+
+        res+=min(res_rand, res_current, res_heur)
+        update_shift(model, child_node, res)
+
+    end
+    return res
+end
+
+function random_shift4(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+    sol=Dict{Symbol,Float64}()
+
+    for child in node.children
+        child_node=model[child.term]
+        two_stage=child_node.two_stage
+        for (i,x) in state
+            lb=two_stage.lower_bounds[i]
+            ub=two_stage.upper_bounds[i]
+            sol[i]=rand()*(ub-lb)+lb
+        end
+        TVx=compute_TV(child_node, sol)
+        Vx=compute_V(child_node.value_function, sol)
+        res_rand=TVx-Vx
+        res_current=θᵏ-compute_V(child_node.value_function, state)
+        res_heur=compute_TV(child_node, child_node.value_function.heuristic_state)-compute_V(child_node.value_function, child_node.value_function.heuristic_state)
+
+        if res_current<=min(res_rand, res_heur)
+            child_node.value_function.heuristic_state=state
+        elseif res_rand<=min(res_heur, res_current)
+            child_node.value_function.heuristic_state=sol
+        end
+
+        res+=min(res_rand, res_current, res_heur)
+
+    end
+    return res
+end
+
+function random_shift5(
+    model::PolicyGraph{T},
+    node::Node{T},
+    bellman_function::BellmanFunction,
+    state::Dict{Symbol,Float64},
+    θᵏ::Float64,
+) where {T}
+    res=0.0
+
+    for child in node.children
+        child_node=model[child.term]
+        res_current=θᵏ-compute_V(child_node.value_function, state)
+        res_heur=compute_TV(child_node, child_node.value_function.heuristic_state)-compute_V(child_node.value_function, child_node.value_function.heuristic_state)
+
+        if res_current<=res_heur
+            println((state,res_current, child_node.value_function.heuristic_state, res_heur))
+            child_node.value_function.heuristic_state=state
+        end
+
+        res+=min(res_current, res_heur)
         update_shift(model, child_node, res)
 
     end

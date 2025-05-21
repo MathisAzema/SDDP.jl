@@ -121,6 +121,7 @@ struct Options{T}
     infinite::Bool
     cut_selection::Bool
     shift_function::Function
+    parallel::Int64
     # Internal function: users should never construct this themselves.
     function Options(
         model::PolicyGraph{T},
@@ -145,6 +146,7 @@ struct Options{T}
         infinite::Bool = false,
         cut_selection::Bool = false,
         shift_function::Function = SDDP.compute_no_shift,
+        parallel::Int64 = 1,
     ) where {T}
         return new{T}(
             initial_state,
@@ -173,6 +175,7 @@ struct Options{T}
             infinite,
             cut_selection,
             shift_function,
+            parallel,
         )
     end
 end
@@ -601,6 +604,15 @@ function inf_norm(x::Dict{Symbol,Float64}, y::Dict{Symbol,Float64})
     return norm
 end
 
+
+mutable struct Trajectory{T}
+    scenario_path::Vector{Tuple{T,Float64}}
+    sampled_states::Vector{Dict{Symbol,Float64}}
+    objective_states::Vector{Tuple{}}
+    belief_states::Vector{Tuple{Int,Dict{T,Float64}}}
+    cumulative_value::Float64
+end
+
 # Internal function: perform a backward pass of the SDDP algorithm along the
 # scenario_path, refining the bellman function at sampled_states. Assumes that
 # scenario_path does not end in a leaf node (i.e., the forward pass was solved
@@ -608,15 +620,21 @@ end
 function backward_pass(
     model::PolicyGraph{T},
     options::Options,
-    scenario_path::Vector{Tuple{T,NoiseType}},
-    sampled_states::Vector{Dict{Symbol,Float64}},
-    objective_states::Vector{NTuple{N,Float64}},
-    belief_states::Vector{Tuple{Int,Dict{T,Float64}}},
-) where {T,NoiseType,N}
+    trajectory::Trajectory{T},
+    # scenario_path::Vector{Tuple{T,NoiseType}},
+    # sampled_states::Vector{Dict{Symbol,Float64}},
+    # objective_states::Vector{NTuple{N,Float64}},
+    # belief_states::Vector{Tuple{Int,Dict{T,Float64}}},
+# ) where {T,NoiseType,N}
+) where {T}
+    scenario_path = trajectory.scenario_path
+    sampled_states = trajectory.sampled_states
+    objective_states = trajectory.objective_states
+    belief_states = trajectory.belief_states
     # TODO(odow): improve storage type.
     cuts = Dict{T,Vector{Any}}(index => Any[] for index in keys(model.nodes))
-    println(scenario_path)
-    println(sampled_states)
+    # println(scenario_path)
+    # println(sampled_states)
     for index in length(scenario_path):-1:1
         outgoing_state = sampled_states[index]
         objective_state = get(objective_states, index, nothing)
@@ -696,11 +714,11 @@ function backward_pass(
             end
             shift=options.shift_function(model, node, node.bellman_function, outgoing_state, θᵏ)
 
-            if outgoing_state[Symbol("volume[1]")]>=170
-                println(shift)
-                println(outgoing_state)
-                println(length(node.value_function.cut_V))
-            end
+            # if outgoing_state[Symbol("volume[1]")]>=170
+            #     println(shift)
+            #     println(outgoing_state)
+            #     println(length(node.value_function.cut_V))
+            # end
 
             # println(sum(items.objectives)/82)
 
@@ -989,14 +1007,21 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
         forward_trajectory = forward_pass(model, options, options.forward_pass)
         options.forward_pass_callback(forward_trajectory)
     end
+    println(typeof(forward_trajectory))
+    println(forward_trajectory)
     @_timeit_threadsafe model.timer_output "backward_pass" begin
+        # cuts = backward_pass(
+        #     model,
+        #     options,
+        #     forward_trajectory.scenario_path,
+        #     forward_trajectory.sampled_states,
+        #     forward_trajectory.objective_states,
+        #     forward_trajectory.belief_states,
+        # )
         cuts = backward_pass(
             model,
             options,
-            forward_trajectory.scenario_path,
-            forward_trajectory.sampled_states,
-            forward_trajectory.objective_states,
-            forward_trajectory.belief_states,
+            forward_trajectory,
         )
     end
     @_timeit_threadsafe model.timer_output "calculate_bound" begin
@@ -1169,6 +1194,7 @@ function train(
     cut_selection::Bool=false,
     discount_factor::Float64=0.1,
     shift_function::Function=SDDP.compute_no_shift,
+    parallel::Int64=1
 )
     #Mathis
     # if infinite
@@ -1319,7 +1345,8 @@ function train(
         root_node_risk_measure,
         infinite,
         cut_selection,
-        shift_function
+        shift_function,
+        parallel
     )
     status = :not_solved
     try
