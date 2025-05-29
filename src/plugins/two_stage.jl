@@ -116,6 +116,7 @@ function initialize_value_function(
         theta_TV,
         Dict{Symbol,JuMP.VariableRef}(),
         Dict{Symbol,JuMP.Float64}(),
+        Cut3[]
     )
 end
 
@@ -132,7 +133,7 @@ function add_state_variables_to_value_function(
         value_function.states[src[1]]=dest
         lb=node.two_stage.lower_bounds[src[1]]
         ub=node.two_stage.upper_bounds[src[1]]
-        value_function.heuristic_state[src[1]]=rand()*(ub-lb)+lb
+        value_function.heuristic_state[src[1]]=(ub+lb)/2
         @constraint(value_function.model, dest >= lb)
         @constraint(value_function.model, dest <= ub)
     end
@@ -255,13 +256,34 @@ function compute_TV(
     return TVx
 end
 
+function compute_TV2(
+    node::Node,
+    incoming_state::Dict{Symbol,Float64}
+)
+    TVx=0.0
+    λ = Dict{Symbol,Float64}(
+        name => 0.0 for
+        (name, state) in node.states)
+    model=node.subproblem
+    set_incoming_state(node, incoming_state)
+    for noise in node.noise_terms
+        parameterize(node, noise.term)
+        JuMP.optimize!(model)
+        TVx += noise.probability * JuMP.objective_value(model)
+        for (name, state) in node.states
+            λ[name]+=noise.probability*JuMP.dual(JuMP.FixRef(state.in))
+        end
+    end
+    return TVx, λ
+end
+
 function compute_inf_V(
     vf::Value_Function
 )
     model=vf.model
     JuMP.optimize!(model)
     obj=JuMP.objective_value(model)
-    return obj
+    return (obj, Dict(i => round.(value.(x)) for (i,x) in vf.states))
 end
 
 function compute_V(
@@ -293,19 +315,19 @@ function compute_approx_TV(
     vf::Value_Function,
     incoming_state::Dict{Symbol,Float64}
 )
-    val = maximum([cut.intercept+cut.shift + sum(cut.coefficients[i] * x for (i,x) in incoming_state) for cut in vf.cut_V])
+    val = maximum([cut.intercept+ sum(cut.coefficients[i] * x for (i,x) in incoming_state) for cut in vf.cut_TV])
     return val
 end
 
-function compute_inf_approx_TV(
-    vf::Value_Function,
-)
-    mod=vf.model_TV
-    JuMP.optimize!(mod)
-    inf_TV_k=JuMP.objective_value(mod)
-    solution=Dict(i => value.(x) for (i,x) in vf.states_TV)
-    return (inf_TV_k, solution)
-end
+# function compute_inf_approx_TV(
+#     vf::Value_Function,
+# )
+#     mod=vf.model_TV
+#     JuMP.optimize!(mod)
+#     inf_TV_k=JuMP.objective_value(mod)
+#     solution=Dict(i => value.(x) for (i,x) in vf.states_TV)
+#     return (inf_TV_k, solution)
+# end
 
 # function compute_V2(
 #     vf::Value_Function,

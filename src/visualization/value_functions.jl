@@ -452,10 +452,12 @@ function compare_models(
     simulations1 = simulate(
         model1,
         replications,
-        [:inflow];
+        [:inflow, :storedEnergy];
         sampling_scheme=InSampleMonteCarlo(max_depth=TimeHorizon),
     )
 
+    println([simulations1[k][i][:storedEnergy] for k in 1:replications, i in 1:TimeHorizon])
+    println([simulations1[k][i][:inflow] for k in 1:replications, i in 1:TimeHorizon])
     oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
     push!(oos, oos1)
 
@@ -478,37 +480,92 @@ function compare_models(
     return oos
 end
 
+# function count_active_cuts(
+#     Cuts::Vector{Log}, 
+#     node::Node, 
+#     tol::Float64
+# )
+#     active_cuts = 0
+#     vf = node.value_function
+#     model=vf.model
+#     T = length(Cuts[1].iter_cuts)
+#     index=node.index == 1 ? T : node.index - 1
+#     println(("Node $(node.index) is checking cuts from node $(index)"))
+#     for (k,c) in enumerate(Cuts)
+#         cnode=c.iter_cuts[index]
+#         for i in 1:length(cnode)
+#             intercept=cnode[i][1]
+#             coef=cnode[i][2]
+#             x_k=cnode[i][3]
+#             @objective(model, Max, intercept - vf.theta + sum(a * (vf.states[i] - x_k[i]) for (i,a) in coef))
+#             JuMP.optimize!(model)
+#             # println((k,i, coef, intercept, value.([vf.states[i] for (i,a) in coef]), JuMP.objective_value(model)))
+#             if JuMP.objective_value(model)>=-tol
+#                 active_cuts += 1
+#             end
+#         end
+#     end
+#     @objective(model, Min, vf.theta)
+#     println("Node $(node.index) has $(active_cuts) active cuts")
+#     return active_cuts
+# end
+
+function is_active(
+    node::Node,
+    intercept::Float64, 
+    coef::Dict{Symbol,Float64},
+    tol::Float64
+)
+    vf=node.value_function
+    model = node.value_function.model
+    @objective(model, Max, intercept - vf.theta + sum(a * vf.states[i] for (i,a) in coef))
+    JuMP.optimize!(model)
+    # println((coef, intercept, JuMP.objective_value(model), value.([vf.states[i] for (i,a) in coef])))
+    if JuMP.objective_value(model)>=-tol
+        return 1
+    else
+        return 0
+    end
+end
+
+function evolution_cuts(node::Node, model_jensen::PolicyGraph)
+    N = length(model_jensen[node.index].value_function.cut_V)
+    evol_cut = [[0 for k in i:N] for i in 1:N]
+    V=node.bellman_function.global_theta
+    vf=node.value_function
+    for (i,cut) in enumerate(model_jensen[node.index].value_function.cut_V[1:N])
+        intercept = cut.intercept
+        coefficient=cut.coefficients
+        shift=cut.shift[end]
+        cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
+        @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
+        cS=@constraint(node.subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
+        push!(vf.cut_V, Cut2(intercept, coefficient, [shift], cV, cS, cut.states))
+        for (k,cutb) in enumerate(model_jensen[node.index].value_function.cut_V[1:i])
+            interceptb = cutb.intercept
+            coefficientb=cutb.coefficients
+            evol_cut[k][i-k+1]=is_active(node, interceptb, coefficientb, 0.01)
+            # println((i, k,is_active(node, interceptb, coefficientb, 0.01)))
+        end
+    end
+    return evol_cut
+end
+
 function count_active_cuts(
-    Cuts::Vector{Log}, 
     node::Node, 
     tol::Float64
 )
     active_cuts = 0
-    vf = node.value_function
-    model=vf.model
-    T = length(Cuts[1].iter_cuts)
-    println("T: ", T)
-    for c in Cuts
-        index=node.index == 1 ? T : node.index - 1
-        cnode=c.iter_cuts[index]
-        for i in 1:length(cnode)
-            intercept=cnode[i][1]
-            coef=cnode[i][2]
-            x_k=cnode[i][3]
-            @objective(model, Max, intercept - vf.theta + sum(a * (vf.states[i] - x_k[i]) for (i,a) in coef))
-            JuMP.optimize!(model)
-            if JuMP.objective_value(model)>=-tol
-                active_cuts += 1
-            end
-        end
+    for (k,cutb) in enumerate(node.value_function.cut_V)
+        interceptb = cutb.intercept
+        coefficientb=cutb.coefficients 
+        active_cuts+=is_active(node, interceptb, coefficientb, tol)
     end
-    println(node.index, " ", active_cuts)
-    @objective(model, Min, vf.theta)
+    println("Node $(node.index) has $(active_cuts) active cuts")
     return active_cuts
 end
 
 function count_all_active_cuts(
-    Cuts::Vector{Log}, 
     model::SDDP.PolicyGraph{T}, 
     tol::Float64
 )  where {T}
@@ -516,5 +573,24 @@ function count_all_active_cuts(
     # for (index,node) in model.nodes
     #     active_cuts += count_active_cuts(Cuts, node, tol)
     # end
-    return [count_active_cuts(Cuts, node, tol) for (index,node) in model.nodes]
+    res = [count_active_cuts(node, tol) for (index,node) in model.nodes]
+    println("Total number of active cuts: $(sum(res))")
+    return res
 end
+
+# function add_cuts(model::SDDP.PolicyGraph, model_jensen::SDDP.PolicyGraph)
+#     for node_index in keys(model.nodes)
+#         node=model[node_index]
+#         V=node.bellman_function.global_theta
+#         vf=node.value_function
+#         for cut in model_jensen[node_index].value_function.cut_V
+#             intercept = cut.intercept
+#             coefficient=cut.coefficients
+#             shift=cut.shift
+#             cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
+#             @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
+#             cS=@constraint(node.subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
+#             push!(vf.cut_V, SDDP.Cut2(intercept, coefficient, shift, cV, cS))
+#         end
+#     end
+# end

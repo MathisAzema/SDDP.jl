@@ -517,6 +517,7 @@ function solve_subproblem(
     else
         nothing
     end
+    # println(node.subproblem)
     JuMP.optimize!(node.subproblem)
     lock(model.lock) do
         model.ext[:total_solves] = get(model.ext, :total_solves, 0) + 1
@@ -606,7 +607,7 @@ end
 
 
 mutable struct Trajectory{T}
-    scenario_path::Vector{Tuple{T,Float64}}
+    scenario_path::Vector{Tuple{T, Any}}
     sampled_states::Vector{Dict{Symbol,Float64}}
     objective_states::Vector{Tuple{}}
     belief_states::Vector{Tuple{Int,Dict{T,Float64}}}
@@ -620,37 +621,89 @@ end
 function backward_pass(
     model::PolicyGraph{T},
     options::Options,
-    trajectory::Trajectory{T},
+    trajectory::Vector{Trajectory{T}},
     # scenario_path::Vector{Tuple{T,NoiseType}},
     # sampled_states::Vector{Dict{Symbol,Float64}},
     # objective_states::Vector{NTuple{N,Float64}},
     # belief_states::Vector{Tuple{Int,Dict{T,Float64}}},
 # ) where {T,NoiseType,N}
 ) where {T}
-    scenario_path = trajectory.scenario_path
-    sampled_states = trajectory.sampled_states
-    objective_states = trajectory.objective_states
-    belief_states = trajectory.belief_states
+    scenario_length = length(trajectory[1].scenario_path)
     # TODO(odow): improve storage type.
     cuts = Dict{T,Vector{Any}}(index => Any[] for index in keys(model.nodes))
-    # println(scenario_path)
-    # println(sampled_states)
-    for index in length(scenario_path):-1:1
-        outgoing_state = sampled_states[index]
-        objective_state = get(objective_states, index, nothing)
-        partition_index, belief_state = get(belief_states, index, (0, nothing))
-        items = BackwardPassItems(T, Noise)
-        if belief_state !== nothing
-            # Update the cost-to-go function for partially observable model.
-            for (node_index, belief) in belief_state
-                if iszero(belief)
+    # println(trajectory[1].sampled_states)
+    # println(trajectory[1].scenario_path)
+    for index in scenario_length:-1:1
+        node_index, _ = trajectory[1].scenario_path[index]
+        # println("node_index: $node_index")
+        node =  model[node_index]
+        items_traj = [BackwardPassItems(T, Noise) for _ in trajectory]
+        outgoing_states = [traj.sampled_states[index] for traj in trajectory]
+        for (index_traj,traj) in enumerate(trajectory)
+            scenario_path = traj.scenario_path
+            objective_states = traj.objective_states
+            belief_states = traj.belief_states
+
+            outgoing_state = outgoing_states[index_traj]
+            objective_state = get(objective_states, index, nothing)
+            partition_index, belief_state = get(belief_states, index, (0, nothing))
+            items = items_traj[index_traj]
+            if belief_state !== nothing
+                # Update the cost-to-go function for partially observable model.
+                for (node_index, belief) in belief_state
+                    if iszero(belief)
+                        continue
+                    end
+                    solve_all_children(
+                        model,
+                        model[node_index],
+                        items,
+                        belief,
+                        belief_state,
+                        objective_state,
+                        outgoing_state,
+                        options.backward_sampling_scheme,
+                        scenario_path[1:index],
+                        options.duality_handler,
+                        options,
+                    )
+                end
+                # We need to refine our estimate at all nodes in the partition.
+                for node_index in model.belief_partition[partition_index]
+                    node = model[node_index]
+                    lock(node.lock)
+                    try
+                        # Update belief state, etc.
+                        current_belief = node.belief_state::BeliefState{T}
+                        for (idx, belief) in belief_state
+                            current_belief.belief[idx] = belief
+                        end
+                        new_cuts = refine_bellman_function(
+                            model,
+                            node,
+                            node.bellman_function,
+                            options.risk_measures[node_index],
+                            outgoing_state,
+                            items.duals,
+                            items.supports,
+                            items.probability .* items.belief,
+                            items.objectives,
+                            options.cut_selection,
+                        )
+                        push!(cuts[node_index], new_cuts)
+                    finally
+                        unlock(node.lock)
+                    end
+                end
+            else
+                if length(node.children) == 0
                     continue
                 end
                 solve_all_children(
                     model,
-                    model[node_index],
+                    node,
                     items,
-                    belief,
+                    1.0,
                     belief_state,
                     objective_state,
                     outgoing_state,
@@ -659,70 +712,21 @@ function backward_pass(
                     options.duality_handler,
                     options,
                 )
-            end
-            # We need to refine our estimate at all nodes in the partition.
-            for node_index in model.belief_partition[partition_index]
-                node = model[node_index]
-                lock(node.lock)
-                try
-                    # Update belief state, etc.
-                    current_belief = node.belief_state::BeliefState{T}
-                    for (idx, belief) in belief_state
-                        current_belief.belief[idx] = belief
-                    end
-                    new_cuts = refine_bellman_function(
-                        model,
-                        node,
-                        node.bellman_function,
-                        options.risk_measures[node_index],
-                        outgoing_state,
-                        items.duals,
-                        items.supports,
-                        items.probability .* items.belief,
-                        items.objectives,
-                        options.cut_selection,
-                    )
-                    push!(cuts[node_index], new_cuts)
-                finally
-                    unlock(node.lock)
-                end
-            end
-        else
-            node_index, _ = scenario_path[index]
-            node = model[node_index]
-            if length(node.children) == 0
-                continue
-            end
-            solve_all_children(
-                model,
-                node,
-                items,
-                1.0,
-                belief_state,
-                objective_state,
-                outgoing_state,
-                options.backward_sampling_scheme,
-                scenario_path[1:index],
-                options.duality_handler,
-                options,
-            )
 
-            θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+                # θᵏ=0.0
+                # for i in 1:length(items.objectives)
+                #     p = items.probability[i]
+                #     θᵏ += p * items.objectives[i]
+                # end
+                # println(outgoing_state)
+                # shift=options.shift_function(model, node, node.bellman_function, outgoing_state, θᵏ)
             end
-            shift=options.shift_function(model, node, node.bellman_function, outgoing_state, θᵏ)
-
-            # if outgoing_state[Symbol("volume[1]")]>=170
-            #     println(shift)
-            #     println(outgoing_state)
-            #     println(length(node.value_function.cut_V))
-            # end
-
-            # println(sum(items.objectives)/82)
-
-            # refine_value_function(model, node, outgoing_state, items, shift)
+        end
+        shift=options.shift_function(model, node, items_traj, outgoing_states)
+        # println(shift)
+        for (index_traj, traj) in enumerate(trajectory)
+            outgoing_state = outgoing_states[index_traj]
+            items = items_traj[index_traj]
             new_cuts = refine_bellman_function(
                 model,
                 node,
@@ -736,6 +740,7 @@ function backward_pass(
                 options.cut_selection,
                 shift,
             )
+
             # println((node_index, new_cuts))
             push!(cuts[node_index], new_cuts)
             if options.refine_at_similar_nodes
@@ -824,6 +829,7 @@ function solve_all_children(
             continue
         end
         child_node = model[child.term]
+        # println("child_node: $(child_node.index)")
         lock(child_node.lock)
         try
             @_timeit_threadsafe model.timer_output "prepare_backward_pass" begin
@@ -890,6 +896,7 @@ function solve_all_children(
                     push!(items.belief, belief)
                     items.cached_solutions[(child.term, noise.term)] =
                         length(items.duals)
+                    # println((node.index, outgoing_state, noise, subproblem_results.objective, subproblem_results.duals))
                 end
             end
             @_timeit_threadsafe model.timer_output "prepare_backward_pass" begin
@@ -1007,17 +1014,12 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
         forward_trajectory = forward_pass(model, options, options.forward_pass)
         options.forward_pass_callback(forward_trajectory)
     end
-    println(typeof(forward_trajectory))
-    println(forward_trajectory)
+    # println(forward_trajectory)
+    # for i in 1:options.parallel
+    #     println("Trajectory $(i):")
+    #     println(forward_trajectory[i])
+    # end
     @_timeit_threadsafe model.timer_output "backward_pass" begin
-        # cuts = backward_pass(
-        #     model,
-        #     options,
-        #     forward_trajectory.scenario_path,
-        #     forward_trajectory.sampled_states,
-        #     forward_trajectory.objective_states,
-        #     forward_trajectory.belief_states,
-        # )
         cuts = backward_pass(
             model,
             options,
@@ -1037,7 +1039,7 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
             Log(
                 length(options.log) + 1,
                 bound,
-                forward_trajectory.cumulative_value,
+                forward_trajectory[1].cumulative_value,
                 time() - options.start_time,
                 max(Threads.threadid(), Distributed.myid()),
                 lock(() -> model.ext[:total_solves], model.lock),
@@ -1051,7 +1053,7 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
         return IterationResult(
             max(Threads.threadid(), Distributed.myid()),
             bound,
-            forward_trajectory.cumulative_value,
+            forward_trajectory[1].cumulative_value,
             has_converged,
             status,
             cuts,
@@ -1167,7 +1169,7 @@ function train(
     model::PolicyGraph;
     iteration_limit::Union{Int,Nothing} = nothing,
     time_limit::Union{Real,Nothing} = nothing,
-    print_level::Int = 1,
+    print_level::Int = 0,
     log_file::String = "SDDP.log",
     log_frequency::Int = 1,
     log_every_seconds::Float64 = log_frequency == 1 ? -1.0 : 0.0,
@@ -1475,6 +1477,8 @@ function _simulate(
                     # TODO: what if the variable container is a dictionary? They
                     # should be using Containers.SparseAxisArray, but this might not
                     # always be the case...
+                    # println("variable: $(variable)")
+                    # println(JuMP.value.(node.subproblem[variable]))
                     store[variable] = JuMP.value.(node.subproblem[variable])
                 elseif skip_undefined_variables
                     store[variable] = NaN

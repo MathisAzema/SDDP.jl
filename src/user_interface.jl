@@ -642,9 +642,15 @@ end
 mutable struct Cut2
     intercept::Float64
     coefficients::Dict{Symbol,Float64}
-    shift::Float64
+    shift::Vector{Float64}
     constraint_V::JuMP.ConstraintRef
     constraint_subproblem::JuMP.ConstraintRef
+    state::Dict{Symbol,Float64}
+end
+
+mutable struct Cut3
+    intercept::Float64
+    coefficients::Dict{Symbol,Float64}
 end
 
 mutable struct Value_Function
@@ -656,6 +662,7 @@ mutable struct Value_Function
     theta_TV::JuMP.VariableRef
     states_TV::Dict{Symbol,JuMP.VariableRef}
     heuristic_state::Dict{Symbol, Float64}
+    cut_TV::Vector{Cut3}
 end
 
 mutable struct Node{T}

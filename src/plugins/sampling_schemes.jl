@@ -46,6 +46,7 @@ function InSampleMonteCarlo(;
     terminate_on_dummy_leaf::Bool = true,
     rollout_limit::Function = i -> typemax(Int),
     initial_node::Any = nothing,
+    parallel::Int = 1,
 )
     if !terminate_on_cycle && !terminate_on_dummy_leaf && max_depth == 0
         error(
@@ -54,7 +55,7 @@ function InSampleMonteCarlo(;
         )
     end
     new_rollout = let i = 0
-        () -> (i += 1; rollout_limit(i))
+        () -> (i += 1; rollout_limit(div(i+parallel-1,parallel)))
     end
     return InSampleMonteCarlo(
         max_depth,
