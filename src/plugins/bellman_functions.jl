@@ -589,7 +589,7 @@ function no_shift(
     return 0.0
 end
 
-function current_shift(
+function shift_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -613,7 +613,7 @@ function current_shift(
     return minimum(res_traj)
 end
 
-function update_shift(
+function shift_update(
     model::PolicyGraph{T},
     node::Node{T},
     shift_k::Float64,
@@ -628,7 +628,7 @@ function update_shift(
     end
 end
 
-function current_shift_update(
+function shift_update_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -655,7 +655,7 @@ function current_shift_update(
     return shift
 end
 
-function current_shift_update_warmstart(
+function shift_update_forward_warmstart(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -694,7 +694,7 @@ function current_shift_update_warmstart(
     return shift
 end
 
-function current_shift_warmstart(
+function shift_forward_warmstart(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -732,7 +732,7 @@ function current_shift_warmstart(
     return shift
 end
 
-function random_shift(
+function shift_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -755,7 +755,7 @@ function random_shift(
     return shift
 end
 
-function random_shift_update(
+function shift_update_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -779,7 +779,7 @@ function random_shift_update(
     return shift
 end
 
-function random_current_shift(
+function shift_random_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -823,7 +823,7 @@ function random_current_shift(
     return shift
 end
 
-function random_current_shift_update(
+function shift_update_random_forward(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -868,7 +868,7 @@ function random_current_shift_update(
     return shift
 end
 
-function random_current_shift_warmstart(
+function shift_random_forward_warmstart(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -929,7 +929,7 @@ function random_current_shift_warmstart(
     return shift
 end
 
-function random_current_shift_update_warmstart(
+function shift_update_random_forward_warmstart(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
