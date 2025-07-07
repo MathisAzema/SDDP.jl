@@ -885,8 +885,11 @@ function random_current_shift(
         TVrandapprox = compute_approx_TV(child_node.value_function, sol)
         shift_rand=Inf
         if TVrandapprox-Vrand<= shift-1e-4
-            TVrand=compute_TV(child_node, sol)
-            shift_rand=TVrand-Vrand
+            TVjensenrand=compute_jensen_TV(child_node, sol)
+            if TVjensenrand-Vrand <= shift-1e-4
+                TVrand=compute_TV(child_node, sol)
+                shift_rand=TVrand-Vrand
+            end
         end
         shift = min(shift, shift_rand)
     end
@@ -926,8 +929,11 @@ function random_current_shift_update(
         TVrandapprox = compute_approx_TV(child_node.value_function, sol)
         shift_rand=Inf
         if TVrandapprox-Vrand<= shift-1e-4
-            TVrand=compute_TV(child_node, sol)
-            shift_rand=TVrand-Vrand
+            TVjensenrand=compute_jensen_TV(child_node, sol)
+            if TVjensenrand-Vrand <= shift-1e-4
+                TVrand=compute_TV(child_node, sol)
+                shift_rand=TVrand-Vrand
+            end
         end
         shift = min(shift, shift_rand)
         update_shift(model, child_node, shift)
@@ -977,8 +983,11 @@ function random_current_shift_warmstart(
         end
         if shift_heur >= shift
             if TVrandapprox-Vrand<= shift-1e-4
-                TVrand=compute_TV(child_node, sol)
-                shift_rand=TVrand-Vrand
+                TVjensenrand=compute_jensen_TV(child_node, sol)
+                if TVjensenrand-Vrand <= shift-1e-4
+                    TVrand=compute_TV(child_node, sol)
+                    shift_rand=TVrand-Vrand
+                end
             end
         end
 
@@ -1039,8 +1048,14 @@ function random_current_shift_update_warmstart(
         end
         if shift_heur >= shift
             if TVrandapprox-Vrand<= shift-1e-4
-                TVrand=compute_TV(child_node, sol)
-                shift_rand=TVrand-Vrand
+                TVjensenrand=compute_jensen_TV(child_node, sol)
+                if TVjensenrand-Vrand <= shift-1e-4
+                    TVrand=compute_TV(child_node, sol)
+                    shift_rand=TVrand-Vrand
+                    # if length(child_node.value_function.cut_V) >= 690
+                    #     println(("rand", child_node.index, TVrandapprox-Vrand, TVjensenrand-Vrand, shift, shift_rand, sol, outgoing_states[k]))
+                    # end
+                end
             end
         end
 
