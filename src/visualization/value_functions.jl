@@ -543,38 +543,23 @@ function count_all_active_cuts(
     return res
 end
 
-# function add_cuts(model::SDDP.PolicyGraph, model_jensen::SDDP.PolicyGraph)
-#     for node_index in keys(model.nodes)
-#         node=model[node_index]
-#         V=node.bellman_function.global_theta
-#         vf=node.value_function
-#         for cut in model_jensen[node_index].value_function.cut_V
-#             intercept = cut.intercept
-#             coefficient=cut.coefficients
-#             shift=cut.shift
-#             cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
-#             @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
-#             cS=@constraint(node.subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
-#             push!(vf.cut_V, SDDP.Cut2(intercept, coefficient, shift, cV, cS))
-#         end
-#     end
-# end
-
-# function add_cuts(model::SDDP.PolicyGraph, model_jensen::SDDP.PolicyGraph)
-#     T=length(model.nodes)
-#     for node_index in keys(model.nodes)
-#         node=model[node_index]
-#         vf=node.value_function
-#         index=node.index == 1 ? T : node.index - 1
-#         V=model[index].bellman_function.global_theta
-#         for cut in model_jensen[node_index].value_function.cut_V[2:4]
-#             intercept = cut.intercept
-#             coefficient=cut.coefficients
-#             shift=cut.shift[end]
-#             cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
-#             @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
-#             cS=@constraint(model[index].subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
-#             push!(vf.cut_V, SDDP.Cut2(intercept, coefficient, [shift], cV, cS, cut.state))
-#         end
-#     end
-# end
+function add_cuts(model_copy::PolicyGraph, model_to_copy::PolicyGraph, iteration::Int64)
+    T=length(model_copy.nodes)
+    for node_index in keys(model_copy.nodes)
+        node=model_copy[node_index]
+        vf=node.value_function
+        index=node.index == 1 ? T : node.index - 1
+        V=model_copy[index].bellman_function.global_theta
+        for cut in model_to_copy[node_index].value_function.cut_V[2:end]
+            if cut.iteration<=iteration
+                intercept = cut.intercept
+                coefficient=cut.coefficients
+                shift=cut.shift[end]
+                cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
+                @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
+                cS=@constraint(model_copy[index].subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
+                push!(vf.cut_V, Cut2(cut.iteration, intercept, coefficient, [shift], cV, cS, cut.state))
+            end
+        end
+    end
+end

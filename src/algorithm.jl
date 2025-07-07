@@ -517,7 +517,6 @@ function solve_subproblem(
     else
         nothing
     end
-    # println(node.subproblem)
     JuMP.optimize!(node.subproblem)
     lock(model.lock) do
         model.ext[:total_solves] = get(model.ext, :total_solves, 0) + 1
@@ -707,7 +706,6 @@ function backward_pass(
             end
         end
         shift=options.shift_function(model, node, items_traj, outgoing_states)
-        # println(shift)
         for (index_traj, traj) in enumerate(trajectory)
             outgoing_state = outgoing_states[index_traj]
             items = items_traj[index_traj]
@@ -726,7 +724,6 @@ function backward_pass(
                 length(options.log)+1
             )
 
-            # println((node_index, new_cuts))
             push!(cuts[node_index], new_cuts)
             if options.refine_at_similar_nodes
                 # Refine the bellman function at other nodes with the same
@@ -881,7 +878,6 @@ function solve_all_children(
                     push!(items.belief, belief)
                     items.cached_solutions[(child.term, noise.term)] =
                         length(items.duals)
-                    # println((node.index, outgoing_state, noise, subproblem_results.objective, subproblem_results.duals))
                 end
             end
             @_timeit_threadsafe model.timer_output "prepare_backward_pass" begin
@@ -999,11 +995,6 @@ function iteration(model::PolicyGraph{T}, options::Options) where {T}
         forward_trajectory = forward_pass(model, options, options.forward_pass)
         options.forward_pass_callback(forward_trajectory)
     end
-    # println(forward_trajectory)
-    # for i in 1:options.parallel
-    #     println("Trajectory $(i):")
-    #     println(forward_trajectory[i])
-    # end
     @_timeit_threadsafe model.timer_output "backward_pass" begin
         cuts = backward_pass(
             model,
