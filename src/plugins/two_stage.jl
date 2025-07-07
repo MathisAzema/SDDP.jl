@@ -263,7 +263,6 @@ function compute_jensen_TV(
     TVx=0.0
     model=node.subproblem
     set_incoming_state(node, incoming_state)
-    # println(node.index)
     parameterize(node, sum(noise.term*noise.probability for noise in node.noise_terms))
     JuMP.optimize!(model)
     return JuMP.objective_value(model)

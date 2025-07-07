@@ -640,6 +640,7 @@ mutable struct TwoStage
 end
 
 mutable struct Cut2
+    iteration::Int64
     intercept::Float64
     coefficients::Dict{Symbol,Float64}
     shift::Vector{Float64}

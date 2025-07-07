@@ -622,20 +622,12 @@ function backward_pass(
     model::PolicyGraph{T},
     options::Options,
     trajectory::Vector{Trajectory{T}},
-    # scenario_path::Vector{Tuple{T,NoiseType}},
-    # sampled_states::Vector{Dict{Symbol,Float64}},
-    # objective_states::Vector{NTuple{N,Float64}},
-    # belief_states::Vector{Tuple{Int,Dict{T,Float64}}},
-# ) where {T,NoiseType,N}
 ) where {T}
     scenario_length = length(trajectory[1].scenario_path)
     # TODO(odow): improve storage type.
     cuts = Dict{T,Vector{Any}}(index => Any[] for index in keys(model.nodes))
-    # println(trajectory[1].sampled_states)
-    # println(trajectory[1].scenario_path)
     for index in scenario_length:-1:1
         node_index, _ = trajectory[1].scenario_path[index]
-        # println("node_index: $node_index")
         node =  model[node_index]
         items_traj = [BackwardPassItems(T, Noise) for _ in trajectory]
         outgoing_states = [traj.sampled_states[index] for traj in trajectory]
@@ -712,14 +704,6 @@ function backward_pass(
                     options.duality_handler,
                     options,
                 )
-
-                # θᵏ=0.0
-                # for i in 1:length(items.objectives)
-                #     p = items.probability[i]
-                #     θᵏ += p * items.objectives[i]
-                # end
-                # println(outgoing_state)
-                # shift=options.shift_function(model, node, node.bellman_function, outgoing_state, θᵏ)
             end
         end
         shift=options.shift_function(model, node, items_traj, outgoing_states)
@@ -739,6 +723,7 @@ function backward_pass(
                 items.objectives,
                 options.cut_selection,
                 shift,
+                length(options.log)+1
             )
 
             # println((node_index, new_cuts))
