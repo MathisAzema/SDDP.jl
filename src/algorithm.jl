@@ -258,7 +258,7 @@ function stage_objective_value(node::Node, stage_objective)
         return _value(stage_objective)
     end
     theta = bellman_term(node.bellman_function)
-    return JuMP.objective_value(node.subproblem) - JuMP.value(theta)
+    return JuMP.objective_value(node.subproblem) - node.discount_factor*JuMP.value(theta)
 end
 
 """
