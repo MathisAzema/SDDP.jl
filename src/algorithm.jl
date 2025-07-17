@@ -122,6 +122,7 @@ struct Options{T}
     cut_selection::Bool
     shift_function::Function
     parallel::Int64
+    start::Float64
     # Internal function: users should never construct this themselves.
     function Options(
         model::PolicyGraph{T},
@@ -145,7 +146,7 @@ struct Options{T}
         root_node_risk_measure::AbstractRiskMeasure = Expectation(),
         infinite::Bool = false,
         cut_selection::Bool = false,
-        shift_function::Function = SDDP.compute_no_shift,
+        shift_function::Function = SDDP.no_shift,
         parallel::Int64 = 1,
     ) where {T}
         return new{T}(
@@ -176,6 +177,7 @@ struct Options{T}
             cut_selection,
             shift_function,
             parallel,
+            time(),
         )
     end
 end
@@ -246,8 +248,18 @@ end
 
 # Internal function: overload for the case where JuMP.value fails on a
 # Real number.
-stage_objective_value(stage_objective::Real) = stage_objective
-stage_objective_value(stage_objective) = JuMP.value(stage_objective)
+_value(x::Real) = x
+_value(x) = JuMP.value(x)
+
+stage_objective_value(::Node, x::Union{GenericVariableRef,Real}) = _value(x)
+
+function stage_objective_value(node::Node, stage_objective)
+    if node.objective_state !== nothing || node.belief_state !== nothing
+        return _value(stage_objective)
+    end
+    theta = bellman_term(node.bellman_function)
+    return JuMP.objective_value(node.subproblem) - JuMP.value(theta)
+end
 
 """
     write_subproblem_to_file(
@@ -533,7 +545,7 @@ function solve_subproblem(
         attempt_numerical_recovery(model, node)
     end
     state = get_outgoing_state(node)
-    stage_objective = stage_objective_value(node.stage_objective)
+    stage_objective = stage_objective_value(node, node.stage_objective)
     @_timeit_threadsafe model.timer_output "get_dual_solution" begin
         objective, dual_values = get_dual_solution(node, duality_handler)
     end
@@ -721,7 +733,8 @@ function backward_pass(
                 items.objectives,
                 options.cut_selection,
                 shift,
-                length(options.log)+1
+                length(options.log)+1,
+                time()-options.start,
             )
 
             push!(cuts[node_index], new_cuts)
@@ -1171,7 +1184,7 @@ function train(
     infinite::Bool=false,
     cut_selection::Bool=false,
     discount_factor::Float64=0.1,
-    shift_function::Function=SDDP.compute_no_shift,
+    shift_function::Function=SDDP.no_shift,
     parallel::Int64=1
 )
     #Mathis

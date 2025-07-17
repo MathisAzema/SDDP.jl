@@ -448,24 +448,12 @@ function compare_models(
     discount_factor::Float64=0.99,
 ) where {T}
     oos=[]
-    model1=list_of_models[1]
-    simulations1 = simulate(
-        model1,
-        replications,
-        [:inflow, :storedEnergy];
-        sampling_scheme=InSampleMonteCarlo(max_depth=TimeHorizon),
-    )
 
-    println([simulations1[k][i][:storedEnergy] for k in 1:replications, i in 1:TimeHorizon])
-    println([simulations1[k][i][:inflow] for k in 1:replications, i in 1:TimeHorizon])
-    oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
-    push!(oos, oos1)
-
-    Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
+    Scenario=[Serialization.deserialize("scenario_oos/scenario_$k.jls") for k in 1:replications]
 
     Noise_scenario=Historical(Scenario)
 
-    for i in 2:length(list_of_models)
+    for i in 1:length(list_of_models)
         model2=list_of_models[i]
         simulations2 = simulate(
             model2,
@@ -479,6 +467,33 @@ function compare_models(
 
     return oos
 end
+
+# function generate_scenario(
+#     list_of_models::Vector{PolicyGraph{T}};
+#     replications::Int=1,
+#     TimeHorizon::Int=1,
+#     discount_factor::Float64=0.99,
+# ) where {T}
+#     oos=[]
+#     model1=list_of_models[1]
+#     simulations1 = simulate(
+#         model1,
+#         replications,
+#         [:inflow, :storedEnergy];
+#         sampling_scheme=InSampleMonteCarlo(max_depth=TimeHorizon),
+#     )
+#     oos1 = [sum((discount_factor^(i-1))*simulations1[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+#     push!(oos, oos1)
+
+#     Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
+
+#     for k in 1:replications
+#         S = Serialization.deserialize("scenario_oos/scenario_$k.jls")
+#         Scenario[k]=vcat(Scenario[k], S)
+#         # Serialization.serialize("scenario_oos/scenario_$k.jls", Scenario[k])
+#     end
+#     return Scenario
+# end
 
 function is_active(
     node::Node,
@@ -558,7 +573,7 @@ function add_cuts(model_copy::PolicyGraph, model_to_copy::PolicyGraph, iteration
                 cV=@constraint(vf.model, vf.theta -sum(coefficient[i]*x for (i,x) in vf.states)>=intercept)
                 @constraint(vf.model_TV, vf.theta_TV -sum(coefficient[i]*x for (i,x) in vf.states_TV)>=intercept + shift)
                 cS=@constraint(model_copy[index].subproblem, V.theta -sum(coefficient[i]*x for (i,x) in V.states)>=intercept)
-                push!(vf.cut_V, Cut2(cut.iteration, intercept, coefficient, [shift], cV, cS, cut.state))
+                push!(vf.cut_V, Cut2(cut.iteration, cut.time, intercept, coefficient, [shift], cV, cS, cut.state))
             end
         end
     end

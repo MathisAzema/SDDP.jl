@@ -5,6 +5,7 @@
 
 mutable struct Cut
     iteration::Int64
+    time::Float64
     intercept::Float64
     coefficients::Dict{Symbol,Float64}
     obj_y::Union{Nothing,NTuple{N,Float64} where {N}}
@@ -95,14 +96,15 @@ function _add_cut(
     xᵏ::Dict{Symbol,Float64},
     obj_y::Union{Nothing,NTuple{N,Float64}},
     belief_y::Union{Nothing,Dict{T,Float64}},
-    iteration::Int64;
+    iteration::Int64,
+    time::Float64;
     cut_selection::Bool = true,
 ) where {N,T}
     for (key, x) in xᵏ
         θᵏ -= πᵏ[key] * x
     end
     _dynamic_range_warning(θᵏ, πᵏ)
-    cut = Cut(iteration, θᵏ, πᵏ, obj_y, belief_y, 1, nothing, xᵏ)
+    cut = Cut(iteration, time, θᵏ, πᵏ, obj_y, belief_y, 1, nothing, xᵏ)
     _add_cut_constraint_to_model(model, node, V, cut, shift)
     if cut_selection
         _cut_selection_update(V, cut, xᵏ)
@@ -168,6 +170,7 @@ function _update_value_function(
         
         cutV = Cut2(
             cut.iteration,
+            cut.time,
             cut.intercept-shift,
             cut.coefficients,
             [shift],
@@ -401,6 +404,7 @@ function initialize_bellman_function(
     cutV = Cut2(
         0,
         0.0,
+        0.0,
         Dict{Symbol,Float64}(i => 0.0 for (i,x) in node.states),
         [0.0],
         cV,
@@ -500,6 +504,7 @@ function refine_bellman_function(
     cut_selection::Bool,
     shift::Float64,
     iteration::Int64,
+    time::Float64,
 ) where {T}
     lock(node.lock)
     try
@@ -516,6 +521,7 @@ function refine_bellman_function(
             cut_selection,
             shift,
             iteration,
+            time,
         )
     finally
         unlock(node.lock)
@@ -535,6 +541,7 @@ function _refine_bellman_function_no_lock(
     cut_selection::Bool,
     shift::Float64,
     iteration::Int64,
+    time::Float64,
 ) where {T}
     # Sanity checks.
     @assert length(dual_variables) ==
@@ -564,6 +571,7 @@ function _refine_bellman_function_no_lock(
             cut_selection,
             shift,
             iteration,
+            time,
         )
     else  # Add a multi-cut
         @assert bellman_function.cut_type == MULTI_CUT
@@ -601,9 +609,9 @@ function shift_forward(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -613,7 +621,7 @@ function shift_forward(
     return minimum(res_traj)
 end
 
-function shift_update(
+function update_shift(
     model::PolicyGraph{T},
     node::Node{T},
     shift_k::Float64,
@@ -641,9 +649,9 @@ function shift_update_forward(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -668,9 +676,9 @@ function shift_update_forward_warmstart(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -685,7 +693,7 @@ function shift_update_forward_warmstart(
             shift_heur=TVheur-Vheur
         end
         if shift<=shift_heur+1e-5
-            child_node.value_function.heuristic_state=outgoing_states[i]
+            child_node.value_function.heuristic_state=outgoing_states[k]
         else 
             shift=shift_heur
         end
@@ -707,9 +715,9 @@ function shift_forward_warmstart(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -724,7 +732,7 @@ function shift_forward_warmstart(
             shift_heur=TVheur-Vheur
         end
         if shift<=shift_heur+1e-5
-            child_node.value_function.heuristic_state=outgoing_states[i]
+            child_node.value_function.heuristic_state=outgoing_states[k]
         else 
             shift=shift_heur
         end
@@ -732,7 +740,7 @@ function shift_forward_warmstart(
     return shift
 end
 
-function shift_forward(
+function shift_random(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -755,7 +763,7 @@ function shift_forward(
     return shift
 end
 
-function shift_update_forward(
+function shift_update_random(
     model::PolicyGraph{T},
     node::Node{T},
     items_traj::Vector{BackwardPassItems{T, Noise}},
@@ -792,9 +800,9 @@ function shift_random_forward(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -836,9 +844,9 @@ function shift_update_random_forward(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -881,9 +889,9 @@ function shift_random_forward_warmstart(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -942,9 +950,9 @@ function shift_update_random_forward_warmstart(
         for (i, items) in enumerate(items_traj)
             state = outgoing_states[i]
             θᵏ=0.0
-            for i in 1:length(items.objectives)
-                p = items.probability[i]
-                θᵏ += p * items.objectives[i]
+            for j in 1:length(items.objectives)
+                p = items.probability[j]
+                θᵏ += p * items.objectives[j]
             end
             TVx=θᵏ
             Vx=compute_V(child_node.value_function, state)
@@ -1083,6 +1091,7 @@ function _add_average_cut(
     cut_selection::Bool,
     shift::Float64,
     iteration::Int64,
+    time::Float64,
 ) where {T}
     N = length(risk_adjusted_probability)
     @assert N == length(objective_realizations) == length(dual_variables)
@@ -1115,6 +1124,7 @@ function _add_average_cut(
         belief_y,
         cut_selection=cut_selection,
         iteration,
+        time,
     )
     return (
         theta = θᵏ-shift,
