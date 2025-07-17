@@ -441,32 +441,34 @@ function compare_two_models(
     return Statistics.mean(oos1), Statistics.std(oos1), Statistics.mean(oos2), Statistics.std(oos2)
 end
 
-function compare_models(
-    list_of_models::Vector{PolicyGraph{T}};
-    replications::Int=1,
-    TimeHorizon::Int=1,
-    discount_factor::Float64=0.99,
-) where {T}
-    oos=[]
 
-    Scenario=[Serialization.deserialize("scenario_oos/scenario_$k.jls") for k in 1:replications]
+# function compare_models(
+#     list_of_models::Vector{PolicyGraph{T}};
+#     replications_min::Int=1,
+#     replications_max::Int=1,
+#     TimeHorizon::Int=1,
+#     discount_factor::Float64=0.99,
+# ) where {T}
+#     oos=[]
 
-    Noise_scenario=Historical(Scenario)
+#     Scenario=[Serialization.deserialize("scenario_oos/scenario_$k.jls") for k in replications_min:replications_max]
 
-    for i in 1:length(list_of_models)
-        model2=list_of_models[i]
-        simulations2 = simulate(
-            model2,
-            replications,
-            [:inflow];
-            sampling_scheme=Noise_scenario,
-        )
-        oos2 = [sum((discount_factor^(i-1))*simulations2[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
-        push!(oos, oos2)
-    end
+#     Noise_scenario=Historical(Scenario)
 
-    return oos
-end
+#     for i in 1:length(list_of_models)
+#         model2=list_of_models[i]
+#         simulations2 = simulate(
+#             model2,
+#             replications,
+#             [:inflow];
+#             sampling_scheme=Noise_scenario,
+#         )
+#         oos2 = [sum((discount_factor^(i-1))*simulations2[k][i][:stage_objective] for i in 1:TimeHorizon) for k in 1:replications]
+#         push!(oos, oos2)
+#     end
+
+#     return oos
+# end
 
 # function generate_scenario(
 #     list_of_models::Vector{PolicyGraph{T}};
@@ -487,10 +489,10 @@ end
 
 #     Scenario=[[((i-1)%length(model1.nodes)+1, simulations1[k][i][:inflow]) for i in 1:TimeHorizon] for k in 1:replications]
 
+#     Noise_scenario=Historical(Scenario)
+
 #     for k in 1:replications
-#         S = Serialization.deserialize("scenario_oos/scenario_$k.jls")
-#         Scenario[k]=vcat(Scenario[k], S)
-#         # Serialization.serialize("scenario_oos/scenario_$k.jls", Scenario[k])
+#         Serialization.serialize("scenario_oos/scenario_$k.jls", Scenario[k])
 #     end
 #     return Scenario
 # end
@@ -545,7 +547,7 @@ function count_active_cuts(
         coefficientb=cutb.coefficients 
         active_cuts+=is_active(node, interceptb, coefficientb, tol)
     end
-    println("Node $(node.index) has $(active_cuts) active cuts")
+    # println("Node $(node.index) has $(active_cuts) active cuts")
     return active_cuts
 end
 
@@ -554,7 +556,7 @@ function count_all_active_cuts(
     tol::Float64
 )  where {T}
     res = [count_active_cuts(node, tol) for (index,node) in model.nodes]
-    println("Total number of active cuts: $(sum(res))")
+    # println("Total number of active cuts: $(sum(res))")
     return res
 end
 
